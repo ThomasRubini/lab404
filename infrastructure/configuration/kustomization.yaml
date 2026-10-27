@@ -5,3 +5,4 @@ resources:
   - metallb-address-pool.yaml
   - envoy-gateway-class.yaml
   - verify-app-images.yaml
+  - collector-network-policy.yaml
