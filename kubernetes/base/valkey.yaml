@@ -29,6 +29,14 @@ spec:
         app.kubernetes.io/component: data
         app.kubernetes.io/part-of: lab404
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       nodeSelector:
         lab404.io/workload: stateful
       tolerations:
@@ -40,6 +48,21 @@ spec:
         - name: valkey
           image: valkey/valkey:8.1-alpine
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
           command: ["/bin/sh", "-c"]
           args: ['exec valkey-server --requirepass "$VALKEY_PASSWORD"']
           env:
@@ -51,6 +74,9 @@ spec:
           ports:
             - name: valkey
               containerPort: 6379
+      volumes:
+        - name: data
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
