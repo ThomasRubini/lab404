@@ -5,7 +5,7 @@ resources:
 images:
   - name: ghcr.io/leofvo/lab404-web
     newName: ghcr.io/thomasrubini/lab404-web
-    newTag: latest
+    digest: sha256:a5202776b61e336b8bde978376de4084076463d67a0a989e9be02d83cd635ee9
   - name: ghcr.io/leofvo/lab404-votes
     newName: ghcr.io/thomasrubini/lab404-votes
-    newTag: latest
+    digest: sha256:13ab5c3743c6479271e632a531ff499c0ecffd31e546bee1136015cab2558c10
