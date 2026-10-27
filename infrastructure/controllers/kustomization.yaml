@@ -8,6 +8,12 @@ helmGlobals:
   chartHome: .cache/charts
 
 helmCharts:
+  - name: sealed-secrets
+    repo: https://bitnami.github.io/sealed-secrets
+    version: 2.22.0
+    releaseName: sealed-secrets
+    namespace: kube-system
+    includeCRDs: true
   - name: kyverno
     repo: https://kyverno.github.io/kyverno
     version: 3.9.2
