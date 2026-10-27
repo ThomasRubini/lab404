@@ -12,10 +12,30 @@ permissions:
   contents: read
   packages: write
 
+env:
+  TRIVY_VERSION: v0.72.0
+
 jobs:
-  build:
-    name: Build ${{ matrix.service }} for ${{ matrix.arch }}
+  dockerfile-lint:
+    name: Lint ${{ matrix.service }} Dockerfile
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [web, votes]
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Run Hadolint
+        run: >-
+          docker run --rm --interactive
+          hadolint/hadolint:v2.14.0@sha256:27086352fd5e1907ea2b934eb1023f217c5ae087992eb59fde121dce9c9ff21e
+          < "apps/${{ matrix.service }}/Dockerfile"
+
+  build:
+    name: Build ${{ matrix.service }} for ${{ matrix.target.arch }}
+    needs: dockerfile-lint
+    runs-on: ${{ matrix.target.runner }}
     strategy:
       fail-fast: false
       matrix:
@@ -23,13 +43,20 @@ jobs:
         target:
           - platform: linux/amd64
             arch: amd64
+            runner: ubuntu-latest
           - platform: linux/arm64
             arch: arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - name: Log in to Docker Hardened Images
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DHI_USERNAME }}
+          password: ${{ secrets.DHI_TOKEN }}
 
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
@@ -68,9 +95,134 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  vulnerability-scan:
+    name: Scan ${{ matrix.service }} for ${{ matrix.arch }} with Trivy
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [web, votes]
+        arch: [amd64, arm64]
+
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: digests-${{ matrix.service }}-${{ matrix.arch }}
+          path: /tmp/digests
+
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          cache: true
+
+      - id: image
+        name: Set image name
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: echo "name=ghcr.io/${OWNER,,}/lab404-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+
+      - name: Scan exact image digest
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p reports
+          digest="$(basename /tmp/digests/*)"
+          image="${IMAGE}@sha256:${digest}"
+          trivy image \
+            --platform "linux/${{ matrix.arch }}" \
+            --scanners vuln \
+            --format table \
+            --output "reports/${{ matrix.service }}-${{ matrix.arch }}.txt" \
+            "${image}"
+          trivy image \
+            --platform "linux/${{ matrix.arch }}" \
+            --scanners vuln \
+            --format cyclonedx \
+            --output "reports/${{ matrix.service }}-${{ matrix.arch }}.cdx.json" \
+            "${image}"
+          trivy image \
+            --platform "linux/${{ matrix.arch }}" \
+            --scanners vuln \
+            --severity CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            "${image}"
+
+      - name: Upload security evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-${{ matrix.service }}-${{ matrix.arch }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 7
+
+  image-lint:
+    name: Audit ${{ matrix.service }} for ${{ matrix.arch }} with Dockle
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [web, votes]
+        arch: [amd64, arm64]
+
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: digests-${{ matrix.service }}-${{ matrix.arch }}
+          path: /tmp/digests
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: image
+        name: Set image name
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: echo "name=ghcr.io/${OWNER,,}/lab404-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+
+      - name: Export exact image digest
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: |
+          mkdir -p dockle-work
+          digest="$(basename /tmp/digests/*)"
+          docker pull --platform "linux/${{ matrix.arch }}" "${IMAGE}@sha256:${digest}"
+          docker save --output dockle-work/image.tar "${IMAGE}@sha256:${digest}"
+
+      - name: Audit image
+        run: |
+          # Kubernetes probes own health checks; the runtimes stay shell-less.
+          docker run --rm \
+            --volume "${PWD}/dockle-work:/scan" \
+            goodwithtech/dockle:v0.4.15@sha256:eade932f793742de0aa8755406c7677cd7696f8675b6180926f7eeffa7abe6b9 \
+            --exit-code 1 \
+            --exit-level fatal \
+            --ignore CIS-DI-0006 \
+            --accept-key=--access-logfile \
+            --format json \
+            --output /scan/dockle.json \
+            --input /scan/image.tar
+
+      - name: Upload Dockle evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dockle-${{ matrix.service }}-${{ matrix.arch }}
+          path: dockle-work/dockle.json
+          if-no-files-found: error
+          retention-days: 7
+
   merge:
     name: Publish ${{ matrix.service }} index
-    needs: build
+    needs: [vulnerability-scan, image-lint]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -102,7 +254,12 @@ jobs:
         env:
           IMAGE: ${{ steps.image.outputs.name }}
         run: |
+          commit_tag="sha-${GITHUB_SHA::12}"
+          tags=(--tag "${IMAGE}:${commit_tag}")
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            tags+=(--tag "${IMAGE}:latest")
+          fi
           docker buildx imagetools create \
-            --tag "${IMAGE}:latest" \
+            "${tags[@]}" \
             $(printf "${IMAGE}@sha256:%s " *)
-          docker buildx imagetools inspect "${IMAGE}:latest"
+          docker buildx imagetools inspect "${IMAGE}:${commit_tag}"
