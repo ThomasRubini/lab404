@@ -8,6 +8,13 @@ helmGlobals:
   chartHome: .cache/charts
 
 helmCharts:
+  - name: kyverno
+    repo: https://kyverno.github.io/kyverno
+    version: 3.9.2
+    releaseName: kyverno
+    namespace: kyverno
+    includeCRDs: true
+    skipHooks: true
   - name: metallb
     repo: https://metallb.github.io/metallb
     version: 0.16.1

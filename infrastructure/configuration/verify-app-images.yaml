@@ -1,0 +1,43 @@
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: verify-lab404-images
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  webhookConfiguration:
+    timeoutSeconds: 30
+  evaluation:
+    background:
+      enabled: false
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: lab404
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, pods/ephemeralcontainers]
+  matchImageReferences:
+    - glob: ghcr.io/thomasrubini/lab404-web@sha256:*
+    - glob: ghcr.io/thomasrubini/lab404-web:*@sha256:*
+    - glob: ghcr.io/thomasrubini/lab404-votes@sha256:*
+    - glob: ghcr.io/thomasrubini/lab404-votes:*@sha256:*
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: true
+    required: true
+  attestors:
+    - name: github
+      cosign:
+        keyless:
+          identities:
+            - subject: https://github.com/ThomasRubini/lab404/.github/workflows/images.yml@refs/heads/main
+              issuer: https://token.actions.githubusercontent.com
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.github])).all(result, result > 0) &&
+        (!has(images.initContainers) || images.initContainers.map(image, verifyImageSignatures(image, [attestors.github])).all(result, result > 0)) &&
+        (!has(images.ephemeralContainers) || images.ephemeralContainers.map(image, verifyImageSignatures(image, [attestors.github])).all(result, result > 0))
+      message: Application images must be signed by the trusted GitHub Actions workflow.
