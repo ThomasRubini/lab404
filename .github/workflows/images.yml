@@ -260,6 +260,59 @@ jobs:
             tags+=(--tag "${IMAGE}:latest")
           fi
           docker buildx imagetools create \
+            --metadata-file "${RUNNER_TEMP}/index-metadata.json" \
             "${tags[@]}" \
             $(printf "${IMAGE}@sha256:%s " *)
           docker buildx imagetools inspect "${IMAGE}:${commit_tag}"
+
+      - name: Upload index digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: index-${{ matrix.service }}
+          path: ${{ runner.temp }}/index-metadata.json
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    name: Sign and verify ${{ matrix.service }} index
+    needs: merge
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      packages: write
+      id-token: write
+    strategy:
+      matrix:
+        service: [web, votes]
+
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: index-${{ matrix.service }}
+
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sign and verify index and runnable manifests
+        env:
+          OWNER: ${{ github.repository_owner }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          image="ghcr.io/${OWNER,,}/lab404-${{ matrix.service }}"
+          digest="$(jq -er '."containerimage.descriptor".digest' index-metadata.json)"
+          identity="https://github.com/${REPOSITORY}/.github/workflows/images.yml@refs/heads/main"
+          issuer="https://token.actions.githubusercontent.com"
+          cosign sign --yes --recursive "${image}@${digest}"
+          cosign verify --certificate-identity "${identity}" --certificate-oidc-issuer "${issuer}" "${image}@${digest}"
+          docker buildx imagetools inspect --raw "${image}@${digest}" > index.json
+          for arch in amd64 arm64; do
+            child="$(jq -er --arg arch "${arch}" '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest] | if length == 1 then .[0] else error("expected one runnable manifest") end' index.json)"
+            cosign verify --certificate-identity "${identity}" --certificate-oidc-issuer "${issuer}" "${image}@${child}"
+          done
