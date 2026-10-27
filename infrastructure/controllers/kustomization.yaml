@@ -8,6 +8,12 @@ helmGlobals:
   chartHome: .cache/charts
 
 helmCharts:
+  - name: falco
+    repo: https://falcosecurity.github.io/charts
+    version: 9.2.1
+    releaseName: falco
+    namespace: falco
+    valuesFile: falco-values.yaml
   - name: sealed-secrets
     repo: https://bitnami.github.io/sealed-secrets
     version: 2.22.0
